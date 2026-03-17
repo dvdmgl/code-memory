@@ -36,7 +36,7 @@ _model = None
 _embedding_dim = None
 
 # Model identifier - can be overridden via EMBEDDING_MODEL environment variable
-DEFAULT_EMBEDDING_MODEL = "jina-code-embeddings-0.5b-GGUF:Q8_0"
+DEFAULT_EMBEDDING_MODEL = "hf.co/jinaai/jina-code-embeddings-0.5b-GGUF:Q8_0"
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
 # Ollama Base URL
@@ -111,23 +111,37 @@ class OllamaEmbedder:
 
         all_embeddings = []
         
-        # Ollama /api/embed supports multiple inputs in one call
-        # We still batch to avoid huge payloads
+        # Try modern batch /api/embed first
+        # If that fails with 404, fallback to /api/embeddings (one by one or legacy batch)
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i : i + batch_size]
             try:
+                # 1. Try modern batch API
                 response = httpx.post(
                     f"{self.base_url}/api/embed",
                     json={"model": self.model_name, "input": batch},
                     timeout=60.0,
                 )
-                response.raise_for_status()
-                data = response.json()
-                embeddings = data.get("embeddings", [])
-                all_embeddings.extend(embeddings)
+                
+                if response.status_code == 404:
+                    # 2. Fallback to legacy single-input API for each in batch
+                    batch_embeddings = []
+                    for s in batch:
+                        resp = httpx.post(
+                            f"{self.base_url}/api/embeddings",
+                            json={"model": self.model_name, "prompt": s},
+                            timeout=60.0,
+                        )
+                        resp.raise_for_status()
+                        batch_embeddings.append(resp.json().get("embedding", []))
+                    all_embeddings.extend(batch_embeddings)
+                else:
+                    response.raise_for_status()
+                    data = response.json()
+                    embeddings = data.get("embeddings", [])
+                    all_embeddings.extend(embeddings)
             except Exception as e:
-                logger.error(f"Ollama embedding failed: {e}")
-                # Return zero vectors on failure to avoid crashing, though not ideal
+                logger.error(f"Ollama embedding failed for batch at {i}: {e}")
                 if self._dim is None:
                     self.get_sentence_embedding_dimension()
                 all_embeddings.extend([[0.0] * self._dim] * len(batch))
@@ -161,6 +175,27 @@ class OllamaEmbedder:
                     json={"model": self.model_name, "input": ["warmup"]},
                     timeout=10.0,
                 )
+                if response.status_code == 404:
+                    logger.warning(
+                        f"Ollama model '{self.model_name}' does not support /api/embed endpoint. "
+                        "Falling back to single-input /api/embeddings for dimension detection."
+                    )
+                    # Fallback to single-input API for dimension detection
+                    resp = httpx.post(
+                        f"{self.base_url}/api/embeddings",
+                        json={"model": self.model_name, "prompt": "warmup"},
+                        timeout=10.0,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    embedding = data.get("embedding", [])
+                    if embedding:
+                        self._dim = len(embedding)
+                        logger.info(f"Detected Ollama model '{self.model_name}' dimension via /api/embeddings: {self._dim}")
+                        return self._dim
+                    else:
+                        raise ValueError("No embedding returned by Ollama probe via /api/embeddings")
+
                 response.raise_for_status()
                 data = response.json()
                 embeddings = data.get("embeddings", [])

@@ -62,7 +62,7 @@ CRITICAL WORKFLOW: You MUST call `index_codebase` BEFORE using any search tools.
 The search tools (search_code, search_docs, search_history) will return empty results
 if the codebase has not been indexed. Always check if indexing is needed:
 
-1. FIRST: Ensure Ollama is running and you have pulled the embedding model (e.g., `ollama pull jina-code-embeddings-0.5b-GGUF:Q8_0`)
+1. FIRST: Ensure Ollama is running and you have pulled the embedding model (e.g., `ollama pull hf.co/jinaai/jina-code-embeddings-0.5b-GGUF:Q8_0`)
 2. SECOND: Call `index_codebase(directory)` to index the project.
 3. THIRD: Use search_code, search_docs, or search_history to find information
 4. RE-INDEX: If you modify files or haven't indexed recently, run index_codebase again

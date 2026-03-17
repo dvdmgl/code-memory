@@ -90,7 +90,7 @@ chmod +x code-memory-*
 code-memory-windows-x86_64.exe
 ```
 
-**Note:** This version requires [Ollama](https://ollama.com) to be running. The first indexing will pull the model (default: `jina-code-embeddings-0.5b-GGUF:Q8_0`).
+**Note:** This version requires [Ollama](https://ollama.com) to be running. The first indexing will pull the model (default: `hf.co/jinaai/jina-code-embeddings-0.5b-GGUF:Q8_0`).
 
 ## Quickstart
 
@@ -144,13 +144,13 @@ Set your preference via environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `EMBEDDING_MODEL` | Ollama model name | `jina-code-embeddings-0.5b-GGUF:Q8_0` |
+| `EMBEDDING_MODEL` | Ollama model name | `hf.co/jinaai/jina-code-embeddings-0.5b-GGUF:Q8_0` |
 | `CODE_MEMORY_OLLAMA_BASE_URL` | Ollama API endpoint | `http://localhost:11434` |
 | `CODE_MEMORY_BATCH_SIZE` | Indexing batch size | `32` |
 
 ### Choosing a Model
 
-- **Jina (`jina-code-embeddings-0.5b-GGUF:Q8_0`) [Default]**: Best for precise code-level retrieval and resource-constrained environments. `code-memory` automatically applies necessary task prefixes for Jina models.
+- **Jina (`hf.co/jinaai/jina-code-embeddings-0.5b-GGUF:Q8_0`) [Default]**: Best for precise code-level retrieval and resource-constrained environments. `code-memory` automatically applies necessary task prefixes for Jina models.
 - **Gemma (`embeddinggemma:latest`)**: Best for general semantic understanding and architecture questions.
 
 ---
