@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 class MockContext:
@@ -10,6 +10,23 @@ class MockContext:
 
     def __init__(self):
         self.report_progress = AsyncMock()
+
+
+class MockEmbedder:
+    """Mock for OllamaEmbedder."""
+
+    def __init__(self, *args, **kwargs):
+        self.model_name = "mock"
+        self._dim = 768
+
+    def encode(self, sentences, *args, **kwargs):
+        import numpy as np
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        return np.zeros((len(sentences), 768))
+
+    def get_sentence_embedding_dimension(self):
+        return 768
 
 
 class TestSearchCodeValidation:
@@ -91,11 +108,13 @@ class TestSearchHistoryValidation:
 class TestIndexCodebaseValidation:
     """Tests for index_codebase tool input validation."""
 
-    def test_nonexistent_directory_returns_error(self):
+    @patch("db.get_embedding_model")
+    def test_nonexistent_directory_returns_error(self, mock_get_model):
         """Test that nonexistent directory returns structured error."""
         import asyncio
-
         import server
+        
+        mock_get_model.return_value = MockEmbedder()
         ctx = MockContext()
 
         async def run_test():

@@ -40,11 +40,7 @@ hidden_imports = [
     'mcp.server.fastmcp',
     'sqlite3',
     'sqlite_vec',
-    'sentence_transformers',
-    'torch',
-    'transformers',
-    'huggingface_hub',
-    'safetensors',
+    'httpx',
     # Tree-sitter core
     'tree_sitter',
     # Local modules
@@ -91,14 +87,7 @@ for lang in tree_sitter_languages:
     except ImportError:
         pass
 
-# Include sentence-transformers and transformers data if available
-try:
-    import sentence_transformers
-    if hasattr(sentence_transformers, '__file__'):
-        st_dir = Path(sentence_transformers.__file__).parent
-        datas.append((str(st_dir), 'sentence_transformers'))
-except ImportError:
-    pass
+# Exclude sentence-transformers and transformers data
 
 a = Analysis(
     ['server.py'],

@@ -1,4 +1,4 @@
-# code-memory
+# code-memory (Ollama Fork)
 
 <!-- mcp-name: io.github.kapillamba4/code-memory -->
 
@@ -11,7 +11,7 @@
 A deterministic, high-precision **code intelligence layer** exposed as a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server.
 
 - **Zero telemetry** — your code never leaves your machine
-- **No API key required** — runs entirely locally with sentence-transformers
+- **No API key required** — runs entirely locally with Ollama
 - **1 min setup** — just `uvx code-memory` and you're ready
 - **Token saving by 50%** — precise code retrieval instead of dumping entire files
 
@@ -40,7 +40,7 @@ Instead of a single monolithic search, `code-memory` routes queries through **th
 | **"Where / What / How?"** — find definitions, references, structure, semantic search | `search_code` | BM25 + Dense Vector (SQLite vec) |
 | **"Architecture / Patterns"** — understand architecture, explain workflows | `search_docs` | Semantic / Fuzzy |
 | **"Who / Why?"** — debug regressions, understand intent | `search_history` | Git + BM25 + Dense Vector (SQLite vec) |
-| **"Setup / Prepare"** — index parsing & embedding generation | `index_codebase` | AST Parser + `sentence-transformers` |
+| **"Setup / Prepare"** — index parsing & embedding generation | `index_codebase` | AST Parser + Ollama |
 
 This forces the LLM to pick the *right retrieval strategy* before any data is fetched.
 
@@ -90,13 +90,14 @@ chmod +x code-memory-*
 code-memory-windows-x86_64.exe
 ```
 
-**Note:** The first run will download the embedding model (~600MB) to `~/.cache/huggingface/`. Subsequent runs use the cached model.
+**Note:** This version requires [Ollama](https://ollama.com) to be running. The first indexing will pull the model (default: `jina-code-embeddings-0.5b-GGUF:Q8_0`).
 
 ## Quickstart
 
 ### Prerequisites
 
 - Python ≥ 3.13
+- [Ollama](https://ollama.com) (Running with `embeddinggemma` pulled)
 - [`uv`](https://docs.astral.sh/uv/) package manager (recommended) or pip
 
 Install uv if you don't have it:
@@ -137,6 +138,23 @@ pyinstaller --clean code-memory.spec
 # Binary output: dist/code-memory
 ```
 
+## Configuration
+
+Set your preference via environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `EMBEDDING_MODEL` | Ollama model name | `jina-code-embeddings-0.5b-GGUF:Q8_0` |
+| `CODE_MEMORY_OLLAMA_BASE_URL` | Ollama API endpoint | `http://localhost:11434` |
+| `CODE_MEMORY_BATCH_SIZE` | Indexing batch size | `32` |
+
+### Choosing a Model
+
+- **Jina (`jina-code-embeddings-0.5b-GGUF:Q8_0`) [Default]**: Best for precise code-level retrieval and resource-constrained environments. `code-memory` automatically applies necessary task prefixes for Jina models.
+- **Gemma (`embeddinggemma:latest`)**: Best for general semantic understanding and architecture questions.
+
+---
+
 ## Configure Your MCP Host
 
 You can use either `uvx` (requires Python) or the standalone binary (no dependencies).
@@ -152,7 +170,7 @@ Add to your MCP settings (e.g. `~/.gemini/settings.json`):
   "mcpServers": {
     "code-memory": {
       "command": "uvx",
-      "args": ["code-memory"]
+      "args": ["--from", "git+https://github.com/dvdmgl/code-memory", "code-memory"]
     }
   }
 }
@@ -167,7 +185,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "code-memory": {
       "command": "uvx",
-      "args": ["code-memory"]
+      "args": ["--from", "git+https://github.com/dvdmgl/code-memory", "code-memory"]
     }
   }
 }
@@ -182,7 +200,7 @@ Add to `.mcp.json` in your project root or `~/.mcp.json` for global access:
   "mcpServers": {
     "code-memory": {
       "command": "uvx",
-      "args": ["code-memory"]
+      "args": ["--from", "git+https://github.com/dvdmgl/code-memory", "code-memory"]
     }
   }
 }

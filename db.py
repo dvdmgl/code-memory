@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+import httpx
 import sqlite_vec
 import xxhash
 
@@ -35,24 +36,50 @@ _model = None
 _embedding_dim = None
 
 # Model identifier - can be overridden via EMBEDDING_MODEL environment variable
-DEFAULT_EMBEDDING_MODEL = "jinaai/jina-code-embeddings-0.5b"
+DEFAULT_EMBEDDING_MODEL = "jina-code-embeddings-0.5b-GGUF:Q8_0"
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
-# Device selection - can be overridden via CODE_MEMORY_DEVICE environment variable
-# Options: 'cuda', 'mps', 'cpu', or 'auto' (default)
-CODE_MEMORY_DEVICE = os.environ.get("CODE_MEMORY_DEVICE", "auto")
+# Ollama Base URL
+OLLAMA_BASE_URL = os.environ.get("CODE_MEMORY_OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Embedding batch size - controls how many texts are embedded at once
 # Larger batches = faster throughput but more memory usage
-CODE_MEMORY_BATCH_SIZE = int(os.environ.get("CODE_MEMORY_BATCH_SIZE", "64"))
+CODE_MEMORY_BATCH_SIZE = int(os.environ.get("CODE_MEMORY_BATCH_SIZE", "32"))
 
-# Cross-encoder reranking - enabled by default for improved precision
-# Set CODE_MEMORY_RERANK=false to disable if latency is a concern
+# Cross-encoder reranking - disabled by default for Ollama migration
+# Set CODE_MEMORY_RERANK=true to enable if you have a reranker model
 CODE_MEMORY_RERANK = os.environ.get("CODE_MEMORY_RERANK", "false").lower() in ("true", "1", "yes")
 
 # Default cross-encoder model for reranking
 DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
 RERANK_MODEL_NAME = os.environ.get("RERANK_MODEL", DEFAULT_RERANK_MODEL)
+
+# Embedding prefix configuration
+CODE_MEMORY_EMBEDDING_PREFIX_ENABLED = os.environ.get("CODE_MEMORY_EMBEDDING_PREFIX_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Jina-specific prefix mapping
+JINA_TASK_PREFIXES = {
+    "nl2code": {
+        "query": "Find the most relevant code snippet given the following query:\n",
+        "passage": "Candidate code snippet:\n",
+    },
+    "techqa": {
+        "query": "Find the most relevant answer given the following question:\n",
+        "passage": "Candidate answer:\n",
+    },
+    "code2code": {
+        "query": "Find an equivalent code snippet given the following code snippet:\n",
+        "passage": "Candidate code snippet:\n",
+    },
+    "code2nl": {
+        "query": "Find the most relevant comment given the following code snippet:\n",
+        "passage": "Candidate comment:\n",
+    },
+    "code2completion": {
+        "query": "Find the most relevant completion given the following start of code snippet:\n",
+        "passage": "Candidate completion:\n",
+    },
+}
 
 # Check for bundled model (used in PyInstaller builds)
 _BUNDLED_MODEL_PATH = None
@@ -61,39 +88,93 @@ if getattr(sys, 'frozen', False):
     _BUNDLED_MODEL_PATH = os.path.join(sys._MEIPASS, 'bundled_model')
 
 
-def _detect_device() -> str:
-    """Detect the best available device for embedding computation.
+class OllamaEmbedder:
+    """Compatibility layer for Ollama embeddings that mimics SentenceTransformer API."""
 
-    Priority: CUDA > MPS (Apple Silicon) > CPU
+    def __init__(self, model_name: str, base_url: str):
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self._dim = None
 
-    Returns:
-        Device string: 'cuda', 'mps', or 'cpu'
-    """
-    import torch
+    def encode(
+        self,
+        sentences: str | list[str],
+        batch_size: int = 32,
+        show_progress_bar: bool = False,
+        normalize_embeddings: bool = True,
+        convert_to_numpy: bool = True,
+        **kwargs
+    ) -> Any:
+        """Encode sentences into embeddings using Ollama API."""
+        if isinstance(sentences, str):
+            sentences = [sentences]
 
-    device_override = CODE_MEMORY_DEVICE.lower()
+        all_embeddings = []
+        
+        # Ollama /api/embed supports multiple inputs in one call
+        # We still batch to avoid huge payloads
+        for i in range(0, len(sentences), batch_size):
+            batch = sentences[i : i + batch_size]
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": self.model_name, "input": batch},
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                embeddings = data.get("embeddings", [])
+                all_embeddings.extend(embeddings)
+            except Exception as e:
+                logger.error(f"Ollama embedding failed: {e}")
+                # Return zero vectors on failure to avoid crashing, though not ideal
+                if self._dim is None:
+                    self.get_sentence_embedding_dimension()
+                all_embeddings.extend([[0.0] * self._dim] * len(batch))
 
-    # Handle manual override
-    if device_override in ('cuda', 'mps', 'cpu'):
-        if device_override == 'cuda' and not torch.cuda.is_available():
-            logger.warning("CUDA requested but not available, falling back to CPU")
-            return 'cpu'
-        if device_override == 'mps' and not torch.backends.mps.is_available():
-            logger.warning("MPS requested but not available, falling back to CPU")
-            return 'cpu'
-        return device_override
+        if convert_to_numpy:
+            import numpy as np
+            return np.array(all_embeddings)
+        return all_embeddings
 
-    # Auto-detect (default behavior)
-    if torch.cuda.is_available():
-        device_name = torch.cuda.get_device_name(0)
-        logger.info(f"CUDA GPU detected: {device_name}")
-        return 'cuda'
+    def _get_prefix(self, task_type: str, is_query: bool) -> str:
+        """Get model-specific prefix for the task."""
+        if not CODE_MEMORY_EMBEDDING_PREFIX_ENABLED:
+            return ""
 
-    if torch.backends.mps.is_available():
-        logger.info("Apple Silicon GPU (MPS) detected")
-        return 'mps'
+        # Check if the model is Jina
+        if "jina" in self.model_name.lower():
+            task_info = JINA_TASK_PREFIXES.get(task_type)
+            if task_info:
+                return task_info["query" if is_query else "passage"]
+        
+        # Default fallback for other models (like Gemma usually doesn't need prefixes)
+        return ""
 
-    return 'cpu'
+    def get_sentence_embedding_dimension(self) -> int:
+        """Get dimension by making a small probe request."""
+        if self._dim is None:
+            try:
+                # Probe with a single token
+                response = httpx.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": self.model_name, "input": ["warmup"]},
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                embeddings = data.get("embeddings", [])
+                if embeddings:
+                    self._dim = len(embeddings[0])
+                    logger.info(f"Detected Ollama model '{self.model_name}' dimension: {self._dim}")
+                else:
+                    raise ValueError("No embeddings returned by Ollama probe")
+            except Exception as e:
+                logger.error(f"Failed to detect Ollama dimension: {e}")
+                # Fallback to a common dimension if necessary, or re-raise
+                raise
+
+        return self._dim
 
 
 def get_embedding_model(force_cpu: bool = False):
@@ -118,29 +199,11 @@ def get_embedding_model(force_cpu: bool = False):
         return _model
 
     if _model is None:
-        from sentence_transformers import SentenceTransformer
-
-        # Detect and use the best available device, or force CPU
-        if force_cpu:
-            device = 'cpu'
-            logger.info("Using CPU for embedding computation (force_cpu=True)")
-        else:
-            device = _detect_device()
-
-        # Use bundled model if available (PyInstaller build)
-        model_path = _BUNDLED_MODEL_PATH if _BUNDLED_MODEL_PATH else EMBEDDING_MODEL_NAME
-        _model = SentenceTransformer(
-            model_path, trust_remote_code=True, device=device
-        )
-
-        if device != 'cpu':
-            logger.info(f"Embedding model loaded on {device.upper()} for acceleration")
-        else:
-            logger.info("Using CPU for embedding computation")
-
-        # Cache the embedding dimension from the model
+        logger.info(f"Initializing Ollama embedder: {EMBEDDING_MODEL_NAME} at {OLLAMA_BASE_URL}")
+        _model = OllamaEmbedder(EMBEDDING_MODEL_NAME, OLLAMA_BASE_URL)
+        # Ensure dimension is loaded
         _embedding_dim = _model.get_sentence_embedding_dimension()
-        logger.info(f"Loaded embedding model '{EMBEDDING_MODEL_NAME}' with dimension: {_embedding_dim}")
+        logger.info(f"Ollama embedder ready with dimension: {_embedding_dim}")
     return _model
 
 
@@ -159,9 +222,15 @@ def get_embedding_dim() -> int:
 def _embed_text_cached(text: str, task_type: str) -> tuple[float, ...]:
     """Cached embedding computation. Returns tuple for hashability."""
     model = get_embedding_model()
-    prefixed_text = f"{task_type}: {text}"
-    vec = model.encode(prefixed_text, normalize_embeddings=True, show_progress_bar=False)
-    return tuple(vec.tolist())
+    
+    # Apply prefix based on model type
+    prefix = ""
+    if hasattr(model, "_get_prefix"):
+        # search_code/docs/history use 'query' for finding results
+        prefix = model._get_prefix(task_type, is_query=True)
+    
+    vec = model.encode(prefix + text, normalize_embeddings=True)
+    return tuple(vec[0].tolist())
 
 
 def embed_text(text: str, task_type: str = "nl2code") -> list[float]:
@@ -202,15 +271,20 @@ def embed_texts_batch(
 
     model = get_embedding_model()
 
-    # Add task prefix to all texts
-    prefixed_texts = [f"{task_type}: {text}" for text in texts]
+    # Apply prefix to all texts if this is for indexing (passage)
+    prefix = ""
+    if hasattr(model, "_get_prefix"):
+        # Indexing uses 'passage' mapping
+        prefix = model._get_prefix(task_type, is_query=False)
+        
+    if prefix:
+        texts = [prefix + t for t in texts]
 
     # Batch encode with normalization
     vectors = model.encode(
-        prefixed_texts,
+        texts,
         batch_size=batch_size,
         normalize_embeddings=True,
-        show_progress_bar=False,
         convert_to_numpy=True,
     )
 
@@ -229,8 +303,8 @@ def warmup_embedding_model(force_cpu: bool = False) -> None:
     """
     model = get_embedding_model(force_cpu=force_cpu)
     # Warmup encode to initialize lazy-loaded components
-    model.encode("nl2code: warmup", normalize_embeddings=True, show_progress_bar=False)
-    logger.info("Embedding model warmed up")
+    model.encode("warmup", normalize_embeddings=True)
+    logger.info("Ollama embedding model warmed up")
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ def ensure_model_warmup(force_cpu: bool = False) -> None:
         if force_cpu:
             db_mod.get_embedding_model(force_cpu=True)
         return
-    logger.info(f"Using embedding model: {db_mod.EMBEDDING_MODEL_NAME}")
+    logger.info(f"Using Ollama model: {db_mod.EMBEDDING_MODEL_NAME} at {db_mod.OLLAMA_BASE_URL}")
     logger.info("Warming up embedding model...")
     db_mod.warmup_embedding_model(force_cpu=force_cpu)
     logger.info("Embedding model ready")
@@ -62,9 +62,10 @@ CRITICAL WORKFLOW: You MUST call `index_codebase` BEFORE using any search tools.
 The search tools (search_code, search_docs, search_history) will return empty results
 if the codebase has not been indexed. Always check if indexing is needed:
 
-1. FIRST: Call `index_codebase(directory)` to index the project
-2. THEN: Use search_code, search_docs, or search_history to find information
-3. RE-INDEX: If you modify files or haven't indexed recently, run index_codebase again
+1. FIRST: Ensure Ollama is running and you have pulled the embedding model (e.g., `ollama pull jina-code-embeddings-0.5b-GGUF:Q8_0`)
+2. SECOND: Call `index_codebase(directory)` to index the project.
+3. THIRD: Use search_code, search_docs, or search_history to find information
+4. RE-INDEX: If you modify files or haven't indexed recently, run index_codebase again
 
 TOOL SELECTION - USE THESE INSTEAD OF grep/glob/find:
 
